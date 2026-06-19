@@ -9,19 +9,8 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app, origins=['http://localhost:3000'])
 
-# Folder where images are stored (files live under product_images/<id>/...)
 S3_BASE_URL = os.getenv("S3_BASE_URL")
 IMAGE_FOLDER = os.path.join(S3_BASE_URL, "product_images")
-
-
-# def image_url_from_db(db_path: str) -> str:
-#     """Turn DB paths like /product_images/1/1.jpeg into a servable URL."""
-#     path = db_path.replace("\\", "/").lstrip("/")
-#     prefix = "product_images/"
-#     if path.startswith(prefix):
-#         path = path[len(prefix) :]
-#     return f"http://127.0.0.1:5000/images/{path}"
-
 
 def get_connection():
     return psycopg2.connect(
@@ -37,33 +26,17 @@ def format_products(rows):
     products = {}
 
     for row in rows:
-        pid = row[0]
-
-        if pid not in products:
-            products[pid] = {
-                "id": pid,
-                "name": row[1],
-                "brand": row[2],
-                "category": row[3],
-                "description": row[4],
-                "images": []
-            }
-        
-
-        # row[5] = image path from DB (e.g. /product_images/1/1.jpeg)
-        # if row[5]:
-            # products[pid]["images"].append(image_url_from_db(row[5]))
+        products[row[0]] = {
+            "id": row[0],
+            "name": row[1],
+            "brand": row[2],
+            "category": row[3],
+            "description": row[4],
+            "images": row[5]
+        }
 
     return list(products.values())
 
-
-# Serve images
-# @app.route('/images/<path:filename>')
-# def serve_image(filename):
-#     return send_from_directory(IMAGE_FOLDER, filename)
-
-
-# Get all products
 @app.route("/api/products")
 def products():
     conn = get_connection()
@@ -71,26 +44,43 @@ def products():
 
     cursor.execute("""
         SELECT
-            p.id,
-            p.product_name,
-            p.brand,
-            p.category,
-            p.description,
-            pi.image_url
-        FROM products p
-        RIGHT JOIN product_images pi
-        ON p.id = pi.product_id
-        ORDER BY p.id
+            id,
+            product_name,
+            brand,
+            category,
+            description
+        FROM products
+        ORDER BY id
     """)
 
-    records = cursor.fetchall()
-    print("records => ", records)
+    rows = cursor.fetchall()
 
+    k = []
+    for row in rows:
+        row_list = list(row)
+        id = row[0]
 
+        cursor.execute(f"select image_url from product_images where product_id={id}")
+
+        images = cursor.fetchall()
+        
+        images_list = []
+        for t in images:
+            for image in t:
+                s3_url = S3_BASE_URL + image
+                images_list.append(s3_url)
+
+        row_list.append(images_list)
+
+        print(row_list, '\n\n')
+        k.append(row_list)
+        
+    formatted_rows = format_products(k)
+    records = jsonify(formatted_rows)
     cursor.close()
     conn.close()
 
-    return jsonify(format_products(records))
+    return records
 
 
 # Get single product
