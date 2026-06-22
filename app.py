@@ -1,16 +1,16 @@
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify
 from flask_cors import CORS
 import psycopg2
 import os
-from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
 app = Flask(__name__)
 CORS(app, origins=['http://localhost:3000'])
 
 S3_BASE_URL = os.getenv("S3_BASE_URL")
-IMAGE_FOLDER = os.path.join(S3_BASE_URL, "product_images")
+
 
 def get_connection():
     return psycopg2.connect(
@@ -26,16 +26,24 @@ def format_products(rows):
     products = {}
 
     for row in rows:
-        products[row[0]] = {
-            "id": row[0],
-            "name": row[1],
-            "brand": row[2],
-            "category": row[3],
-            "description": row[4],
-            "images": row[5]
-        }
+        product_id = row[0]
+
+        if product_id not in products:
+            products[product_id] = {
+                "id": row[0],
+                "name": row[1],
+                "brand": row[2],
+                "category": row[3],
+                "description": row[4],
+                "images": []
+            }
+
+        if row[5]:
+            image_url = f"{S3_BASE_URL.rstrip('/')}/{row[5].lstrip('/')}"
+            products[product_id]["images"].append(image_url)
 
     return list(products.values())
+
 
 @app.route("/api/products")
 def products():
@@ -44,48 +52,28 @@ def products():
 
     cursor.execute("""
         SELECT
-            id,
-            product_name,
-            brand,
-            category,
-            description
-        FROM products
-        ORDER BY id
+            p.id,
+            p.product_name,
+            p.brand,
+            p.category,
+            p.description,
+            pi.image_url
+        FROM products p
+        LEFT JOIN product_images pi
+        ON p.id = pi.product_id
+        ORDER BY p.id
     """)
 
     rows = cursor.fetchall()
 
-    k = []
-    for row in rows:
-        row_list = list(row)
-        id = row[0]
-
-        cursor.execute(f"select image_url from product_images where product_id={id}")
-
-        images = cursor.fetchall()
-        
-        images_list = []
-        for t in images:
-            for image in t:
-                s3_url = S3_BASE_URL + image
-                images_list.append(s3_url)
-
-        row_list.append(images_list)
-
-        print(row_list, '\n\n')
-        k.append(row_list)
-        
-    formatted_rows = format_products(k)
-    records = jsonify(formatted_rows)
     cursor.close()
     conn.close()
 
-    return records
+    return jsonify(format_products(rows))
 
 
-# Get single product
-@app.route("/api/products/<id>")
-def get_product(id):
+@app.route("/api/products/<int:product_id>")
+def get_product(product_id):
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -101,18 +89,19 @@ def get_product(id):
         LEFT JOIN product_images pi
         ON p.id = pi.product_id
         WHERE p.id = %s
-    """, (id,))
+    """, (product_id,))
 
-    records = cursor.fetchall()
+    rows = cursor.fetchall()
 
     cursor.close()
     conn.close()
 
-    if not records:
+    if not rows:
         return jsonify({"error": "Product not found"}), 404
 
-    products = format_products(records)
-    return jsonify(products[0] if products else {"error": "Product not found"})
+    product = format_products(rows)[0]
+
+    return jsonify(product)
 
 
 if __name__ == "__main__":
